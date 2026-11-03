@@ -1,212 +1,188 @@
-import io
 import os
-import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog
-from PIL import ImageStat
-import pypdfium2 as pdfium
+import getpass
 from pypdf import PdfReader, PdfWriter
-from reportlab.lib.colors import HexColor
-from reportlab.pdfgen import canvas
-
-CLAVE_POR_DEFECTO = "archivo2025"
-CARATULA_BASE_NOMBRE = "CARATULA BASE OFICIAL.pdf"
 
 
-def es_pagina_en_blanco_visual(
-    pdf_path: str, num_pag: int, umbral_brillo: float = 250.0
-) -> bool:
-    """Renderiza la página en memoria y evalúa si está en blanco o vacía."""
-    try:
-        doc = pdfium.PdfDocument(pdf_path, password=CLAVE_POR_DEFECTO)
-        page = doc.get_page(num_pag)
-        bitmap = page.render(scale=0.5)
-        pil_image = bitmap.to_pil().convert("L")
+# ==========================================================
+# MÓDULO 1: UNIFICACIÓN DE LEGAJO
+# ==========================================================
+class UnificacionLegajo:
+    """Módulo para unir múltiples archivos PDF en un único legajo final."""
 
-        stat = ImageStat.Stat(pil_image)
-        brillo_promedio = stat.mean[0]
-        desviacion = stat.stddev[0]
-
-        if brillo_promedio >= umbral_brillo and desviacion < 8.0:
-            return True
-        return False
-    except Exception:
-        return False
-
-
-def procesar_unificacion():
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)
-
-    # 1. Solicitar el número de legajo
-    entrada_usuario = simpledialog.askstring(
-        "Número de Legajo",
-        "Ingrese el número de legajo:",
-        parent=root,
-    )
-
-    if not entrada_usuario or not entrada_usuario.strip():
-        messagebox.showwarning(
-            "Cancelado", "No se ingresó ningún número de legajo."
-        )
-        root.destroy()
-        return
-
-    # Limpia el número base y arma el formato con /00 para la carátula
-    num_puro = entrada_usuario.strip().rstrip("/")
-    if num_puro.endswith("/00"):
-        num_puro = num_puro[:-3]
-
-    legajo_caratula = f"{num_puro}/00"
-
-    # 2. Localizar la Carátula Base Oficial
-    ruta_caratula = os.path.join(os.getcwd(), CARATULA_BASE_NOMBRE)
-    if not os.path.exists(ruta_caratula):
-        messagebox.showinfo(
-            "Carátula Oficial",
-            f"Seleccione el archivo oficial ({CARATULA_BASE_NOMBRE})",
-        )
-        ruta_caratula = filedialog.askopenfilename(
-            title=f"Seleccionar {CARATULA_BASE_NOMBRE}",
-            filetypes=[("Archivos PDF", "*.pdf")],
-        )
-        if not ruta_caratula:
-            messagebox.showwarning(
-                "Cancelado", "Se requiere la carátula para continuar."
-            )
-            root.destroy()
+    @staticmethod
+    def unir_legajo(directorio_origen: str, archivo_salida: str) -> None:
+        if not os.path.isdir(directorio_origen):
+            print(f"[Error] La carpeta especificada no existe: {directorio_origen}")
             return
 
-    try:
-        # Lectura de la carátula base
-        lector_base = PdfReader(ruta_caratula)
-        if lector_base.is_encrypted:
-            lector_base.decrypt(CLAVE_POR_DEFECTO)
+        # Filtrar y ordenar alfabéticamente los PDFs
+        archivos = sorted([
+            f for f in os.listdir(directorio_origen) 
+            if f.lower().endswith(".pdf")
+        ])
 
-        pagina_base = lector_base.pages[0]
-        ancho = float(pagina_base.mediabox.width)
-        alto = float(pagina_base.mediabox.height)
+        if not archivos:
+            print("[Aviso] No se encontraron archivos PDF para unificar.")
+            return
 
-        # Capa de texto con número de legajo tamaño 24 y posición fija
-        buffer = io.BytesIO()
-        c = canvas.Canvas(buffer, pagesize=(ancho, alto))
-        c.setFillColor(HexColor("#000000"))
-        c.setFont("Helvetica-Bold", 24)
+        escritor = PdfWriter()
+        archivos_agregados = 0
 
-        # Posición fija calibrada
-        c.drawString(ancho * 0.315, alto * 0.468, legajo_caratula)
-
-        c.save()
-        buffer.seek(0)
-
-        lector_overlay = PdfReader(buffer)
-        pagina_base.merge_page(lector_overlay.pages[0])
-
-        writer_final = PdfWriter()
-        writer_final.add_page(pagina_base)
-
-    except Exception as e:
-        messagebox.showerror(
-            "Error", f"No se pudo generar la carátula: {str(e)}"
-        )
-        root.destroy()
-        return
-
-    # 3. Selección múltiple de documentos anexos
-    es_primera_seleccion = True
-
-    while True:
-        if not es_primera_seleccion:
-            agregar = messagebox.askyesno(
-                "Agregar Documentos", "¿Desea agregar más archivos PDF?"
-            )
-            if not agregar:
-                break
-
-        # askopenfilenames permite seleccionar uno o varios archivos manteniendo Ctrl o Shift
-        archivos_seleccionados = filedialog.askopenfilenames(
-            title="Seleccionar archivos PDF a anexar (puede seleccionar varios)"
-            if not es_primera_seleccion
-            else "Seleccionar primeros archivos PDF a anexar (puede seleccionar varios)",
-            filetypes=[("Archivos PDF", "*.pdf")],
-        )
-
-        if not archivos_seleccionados:
-            if es_primera_seleccion:
-                confirmar = messagebox.askyesno(
-                    "Sin documentos",
-                    "No seleccionó ningún archivo. ¿Desea continuar y guardar solo la carátula?",
-                )
-                if not confirmar:
-                    root.destroy()
-                    return
-                break
-            else:
-                continue
-
-        # Procesar en orden cada archivo seleccionado del lote
-        for archivo in archivos_seleccionados:
+        for nombre_archivo in archivos:
+            ruta_completa = os.path.join(directorio_origen, nombre_archivo)
             try:
-                lector_anexo = PdfReader(archivo)
+                lector = PdfReader(ruta_completa)
+                if lector.is_encrypted:
+                    print(f"[Omitido] '{nombre_archivo}' tiene contraseña. Desbloquéalo primero.")
+                    continue
 
-                # Desbloqueo automático si el anexo tiene contraseña
-                if lector_anexo.is_encrypted:
-                    resultado = lector_anexo.decrypt(CLAVE_POR_DEFECTO)
-                    if resultado == 0:
-                        clave_manual = simpledialog.askstring(
-                            "Contraseña",
-                            f"La clave por defecto falló para '{os.path.basename(archivo)}'. Ingrese la clave:",
-                            parent=root,
-                        )
-                        if clave_manual:
-                            lector_anexo.decrypt(clave_manual)
+                for pagina in lector.pages:
+                    escritor.add_page(pagina)
 
-                # Filtrar páginas: se descartan las que estén visualmente en blanco
-                total_paginas = len(lector_anexo.pages)
-                for idx in range(total_paginas):
-                    if not es_pagina_en_blanco_visual(archivo, idx):
-                        writer_final.add_page(lector_anexo.pages[idx])
+                print(f"[Añadido] {nombre_archivo}")
+                archivos_agregados += 1
+            except Exception as e:
+                print(f"[Error] No se pudo procesar '{nombre_archivo}': {e}")
+
+        if archivos_agregados > 0:
+            with open(archivo_salida, "wb") as f_salida:
+                escritor.write(f_salida)
+            print(f"\n[Éxito] Legajo unificado generado correctamente en: {archivo_salida}")
+        else:
+            print("[Aviso] No se añadió ningún archivo al legajo final.")
+
+
+# ==========================================================
+# MÓDULO 2: GESTIÓN DE SEGURIDAD (QUITAR / AGREGAR CONTRASEÑA)
+# ==========================================================
+class GestorSeguridadPDF:
+    """Módulo para remover o aplicar protección con contraseña de forma masiva."""
+
+    @staticmethod
+    def quitar_contrasena_masivo(carpeta_origen: str, carpeta_destino: str) -> None:
+        if not os.path.isdir(carpeta_origen):
+            print(f"[Error] Carpeta de origen no encontrada: {carpeta_origen}")
+            return
+
+        password = getpass.getpass("Ingrese la contraseña actual para desbloquear los PDFs: ")
+        os.makedirs(carpeta_destino, exist_ok=True)
+
+        archivos = [f for f in os.listdir(carpeta_origen) if f.lower().endswith(".pdf")]
+        procesados = 0
+
+        for archivo in archivos:
+            ruta_entrada = os.path.join(carpeta_origen, archivo)
+            ruta_salida = os.path.join(carpeta_destino, archivo)
+
+            try:
+                lector = PdfReader(ruta_entrada)
+                if lector.is_encrypted:
+                    estado = lector.decrypt(password)
+                    if estado == 0:
+                        print(f"[Fallo Clave] Contraseña incorrecta para: {archivo}")
+                        continue
+
+                escritor = PdfWriter()
+                for pagina in lector.pages:
+                    escritor.add_page(pagina)
+
+                with open(ruta_salida, "wb") as f_out:
+                    escritor.write(f_out)
+
+                print(f"[Desprotegido] {archivo}")
+                procesados += 1
 
             except Exception as e:
-                messagebox.showerror(
-                    "Error al procesar archivo",
-                    f"No se pudo procesar el archivo '{os.path.basename(archivo)}':\n{str(e)}",
-                )
+                print(f"[Error] No se pudo procesar '{archivo}': {e}")
 
-        es_primera_seleccion = False
+        print(f"\n[Fin] Total de archivos desbloqueados: {procesados}/{len(archivos)}")
 
-    # 4. Guardar archivo final unificado como 'LEGAJO [número]'
-    nombre_archivo_sugerido = f"LEGAJO {num_puro}.pdf"
+    @staticmethod
+    def agregar_contrasena_masivo(carpeta_origen: str, carpeta_destino: str) -> None:
+        if not os.path.isdir(carpeta_origen):
+            print(f"[Error] Carpeta de origen no encontrada: {carpeta_origen}")
+            return
 
-    ruta_guardado = filedialog.asksaveasfilename(
-        title="Guardar legajo unificado como...",
-        initialfile=nombre_archivo_sugerido,
-        defaultextension=".pdf",
-        filetypes=[("Archivos PDF", "*.pdf")],
-        parent=root,
-    )
+        nueva_clave = getpass.getpass("Ingrese la nueva contraseña que desea aplicar a los PDFs: ")
+        confirmacion = getpass.getpass("Confirme la contraseña: ")
 
-    if not ruta_guardado:
-        messagebox.showwarning(
-            "Cancelado", "No se guardó el documento unificado."
-        )
-        root.destroy()
-        return
+        if nueva_clave != confirmacion:
+            print("[Error] Las contraseñas no coinciden. Operación cancelada.")
+            return
 
-    try:
-        with open(ruta_guardado, "wb") as f_out:
-            writer_final.write(f_out)
-        writer_final.close()
-        messagebox.showinfo(
-            "Éxito", f"Legajo guardado correctamente en:\n{ruta_guardado}"
-        )
-    except Exception as e:
-        messagebox.showerror(
-            "Error al guardar", f"No se pudo guardar el archivo final: {str(e)}"
-        )
-    finally:
-        root.destroy()
+        os.makedirs(carpeta_destino, exist_ok=True)
+
+        archivos = [f for f in os.listdir(carpeta_origen) if f.lower().endswith(".pdf")]
+        procesados = 0
+
+        for archivo in archivos:
+            ruta_entrada = os.path.join(carpeta_origen, archivo)
+            ruta_salida = os.path.join(carpeta_destino, archivo)
+
+            try:
+                lector = PdfReader(ruta_entrada)
+                if lector.is_encrypted:
+                    print(f"[Omitido] '{archivo}' ya está cifrado. Primero remueve su contraseña.")
+                    continue
+
+                escritor = PdfWriter()
+                for pagina in lector.pages:
+                    escritor.add_page(pagina)
+
+                # Cifrado con algoritmo estándar AES-128
+                escritor.encrypt(user_password=nueva_clave)
+
+                with open(ruta_salida, "wb") as f_out:
+                    escritor.write(f_out)
+
+                print(f"[Protegido] {archivo}")
+                procesados += 1
+
+            except Exception as e:
+                print(f"[Error] Fallo al proteger '{archivo}': {e}")
+
+        print(f"\n[Fin] Total de archivos protegidos: {procesados}/{len(archivos)}")
+
+
+# ==========================================================
+# MENÚ DE CONSOLA INTERACTIVO
+# ==========================================================
+def menu_principal():
+    while True:
+        print("\n" + "=" * 45)
+        print("          HERRAMIENTA GESTIÓN DE PDF         ")
+        print("=" * 45)
+        print("1. Unificación de Legajo (Combinar PDFs)")
+        print("2. Quitar contraseña masivamente")
+        print("3. Agregar contraseña masivamente")
+        print("4. Salir")
+        
+        opcion = input("\nSeleccione una opción (1-4): ").strip()
+
+        if opcion == "1":
+            print("\n--- UNIFICACIÓN DE LEGAJO ---")
+            origen = input("Ruta de la carpeta con los PDFs a unir: ").strip()
+            salida = input("Nombre o ruta del archivo de salida (ej. legajo_completo.pdf): ").strip()
+            UnificacionLegajo.unir_legajo(origen, salida)
+
+        elif opcion == "2":
+            print("\n--- REMOVER CONTRASEÑAS ---")
+            origen = input("Ruta de la carpeta origen (con PDFs protegidos): ").strip()
+            destino = input("Ruta de la carpeta de destino: ").strip()
+            GestorSeguridadPDF.quitar_contrasena_masivo(origen, destino)
+
+        elif opcion == "3":
+            print("\n--- AGREGAR CONTRASEÑA ---")
+            origen = input("Ruta de la carpeta origen (PDFs sin contraseña): ").strip()
+            destino = input("Ruta de la carpeta de destino: ").strip()
+            GestorSeguridadPDF.agregar_contrasena_masivo(origen, destino)
+
+        elif opcion == "4":
+            print("Cerrando la aplicación.")
+            break
+        else:
+            print("Opción inválida. Intente de nuevo.")
 
 
 if __name__ == "__main__":
-    procesar_unificacion()
+    menu_principal()
