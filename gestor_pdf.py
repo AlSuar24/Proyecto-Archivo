@@ -2,6 +2,8 @@ import io
 import os
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
+from PIL import ImageStat
+import pypdfium2 as pdfium
 from pypdf import PdfReader, PdfWriter
 from reportlab.lib.colors import HexColor
 from reportlab.pdfgen import canvas
@@ -10,27 +12,25 @@ CLAVE_POR_DEFECTO = "archivo2025"
 CARATULA_BASE_NOMBRE = "CARATULA BASE OFICIAL.pdf"
 
 
-def es_pagina_en_blanco(pagina) -> bool:
-    """Determina si una página no contiene texto ni imágenes."""
-    # 1. Comprueba si existe contenido de texto
-    texto = pagina.extract_text() or ""
-    if texto.strip():
-        return False
-
-    # 2. Comprueba si contiene imágenes u objetos visuales en sus recursos
+def es_pagina_en_blanco_visual(
+    pdf_path: str, num_pag: int, umbral_brillo: float = 250.0
+) -> bool:
+    """Renderiza la página en memoria y evalúa si está en blanco o vacía."""
     try:
-        recursos = pagina.get("/Resources", {})
-        if "/XObject" in recursos:
-            xobjects = recursos["/XObject"]
-            for obj_key in xobjects:
-                obj = xobjects[obj_key]
-                if obj.get("/Subtype") == "/Image":
-                    return False
-    except Exception:
-        # En caso de no poder parsear recursos específicos, se asume que contiene contenido por seguridad
-        return False
+        doc = pdfium.PdfDocument(pdf_path, password=CLAVE_POR_DEFECTO)
+        page = doc.get_page(num_pag)
+        bitmap = page.render(scale=0.5)
+        pil_image = bitmap.to_pil().convert("L")
 
-    return True
+        stat = ImageStat.Stat(pil_image)
+        brillo_promedio = stat.mean[0]
+        desviacion = stat.stddev[0]
+
+        if brillo_promedio >= umbral_brillo and desviacion < 8.0:
+            return True
+        return False
+    except Exception:
+        return False
 
 
 def procesar_unificacion():
@@ -42,11 +42,13 @@ def procesar_unificacion():
     entrada_usuario = simpledialog.askstring(
         "Número de Legajo",
         "Ingrese el número de legajo:",
-        parent=root
+        parent=root,
     )
 
     if not entrada_usuario or not entrada_usuario.strip():
-        messagebox.showwarning("Cancelado", "No se ingresó ningún número de legajo.")
+        messagebox.showwarning(
+            "Cancelado", "No se ingresó ningún número de legajo."
+        )
         root.destroy()
         return
 
@@ -60,13 +62,18 @@ def procesar_unificacion():
     # 2. Localizar la Carátula Base Oficial
     ruta_caratula = os.path.join(os.getcwd(), CARATULA_BASE_NOMBRE)
     if not os.path.exists(ruta_caratula):
-        messagebox.showinfo("Carátula Oficial", f"Seleccione el archivo oficial ({CARATULA_BASE_NOMBRE})")
+        messagebox.showinfo(
+            "Carátula Oficial",
+            f"Seleccione el archivo oficial ({CARATULA_BASE_NOMBRE})",
+        )
         ruta_caratula = filedialog.askopenfilename(
             title=f"Seleccionar {CARATULA_BASE_NOMBRE}",
-            filetypes=[("Archivos PDF", "*.pdf")]
+            filetypes=[("Archivos PDF", "*.pdf")],
         )
         if not ruta_caratula:
-            messagebox.showwarning("Cancelado", "Se requiere la carátula para continuar.")
+            messagebox.showwarning(
+                "Cancelado", "Se requiere la carátula para continuar."
+            )
             root.destroy()
             return
 
@@ -80,13 +87,13 @@ def procesar_unificacion():
         ancho = float(pagina_base.mediabox.width)
         alto = float(pagina_base.mediabox.height)
 
-        # Generar capa de texto con tamaño 24 y posición calibrada
+        # Capa de texto con número de legajo tamaño 24 y posición fija
         buffer = io.BytesIO()
         c = canvas.Canvas(buffer, pagesize=(ancho, alto))
         c.setFillColor(HexColor("#000000"))
         c.setFont("Helvetica-Bold", 24)
 
-        # Posición fija
+        # Posición fija calibrada
         c.drawString(ancho * 0.315, alto * 0.468, legajo_caratula)
 
         c.save()
@@ -99,46 +106,74 @@ def procesar_unificacion():
         writer_final.add_page(pagina_base)
 
     except Exception as e:
-        messagebox.showerror("Error", f"No se pudo generar la carátula: {str(e)}")
+        messagebox.showerror(
+            "Error", f"No se pudo generar la carátula: {str(e)}"
+        )
         root.destroy()
         return
 
-    # 3. Preguntar y agregar documentos anexos (filtrando páginas en blanco)
-    while True:
-        agregar = messagebox.askyesno("Agregar Documentos", "¿Desea agregar otro documento?")
-        if not agregar:
-            break
+    # 3. Selección múltiple de documentos anexos
+    es_primera_seleccion = True
 
-        archivo = filedialog.askopenfilename(
-            title="Seleccionar documento a anexar",
-            filetypes=[("Archivos PDF", "*.pdf")]
+    while True:
+        if not es_primera_seleccion:
+            agregar = messagebox.askyesno(
+                "Agregar Documentos", "¿Desea agregar más archivos PDF?"
+            )
+            if not agregar:
+                break
+
+        # askopenfilenames permite seleccionar uno o varios archivos manteniendo Ctrl o Shift
+        archivos_seleccionados = filedialog.askopenfilenames(
+            title="Seleccionar archivos PDF a anexar (puede seleccionar varios)"
+            if not es_primera_seleccion
+            else "Seleccionar primeros archivos PDF a anexar (puede seleccionar varios)",
+            filetypes=[("Archivos PDF", "*.pdf")],
         )
 
-        if not archivo:
-            continue
+        if not archivos_seleccionados:
+            if es_primera_seleccion:
+                confirmar = messagebox.askyesno(
+                    "Sin documentos",
+                    "No seleccionó ningún archivo. ¿Desea continuar y guardar solo la carátula?",
+                )
+                if not confirmar:
+                    root.destroy()
+                    return
+                break
+            else:
+                continue
 
-        try:
-            lector_anexo = PdfReader(archivo)
+        # Procesar en orden cada archivo seleccionado del lote
+        for archivo in archivos_seleccionados:
+            try:
+                lector_anexo = PdfReader(archivo)
 
-            # Desbloqueo automático si el anexo tiene contraseña
-            if lector_anexo.is_encrypted:
-                resultado = lector_anexo.decrypt(CLAVE_POR_DEFECTO)
-                if resultado == 0:
-                    clave_manual = simpledialog.askstring(
-                        "Contraseña",
-                        f"La clave por defecto falló para '{os.path.basename(archivo)}'. Ingrese la clave:",
-                        parent=root
-                    )
-                    if clave_manual:
-                        lector_anexo.decrypt(clave_manual)
+                # Desbloqueo automático si el anexo tiene contraseña
+                if lector_anexo.is_encrypted:
+                    resultado = lector_anexo.decrypt(CLAVE_POR_DEFECTO)
+                    if resultado == 0:
+                        clave_manual = simpledialog.askstring(
+                            "Contraseña",
+                            f"La clave por defecto falló para '{os.path.basename(archivo)}'. Ingrese la clave:",
+                            parent=root,
+                        )
+                        if clave_manual:
+                            lector_anexo.decrypt(clave_manual)
 
-            # Agregar solo las páginas que contengan información
-            for pagina in lector_anexo.pages:
-                if not es_pagina_en_blanco(pagina):
-                    writer_final.add_page(pagina)
+                # Filtrar páginas: se descartan las que estén visualmente en blanco
+                total_paginas = len(lector_anexo.pages)
+                for idx in range(total_paginas):
+                    if not es_pagina_en_blanco_visual(archivo, idx):
+                        writer_final.add_page(lector_anexo.pages[idx])
 
-        except Exception as e:
-            messagebox.showerror("Error al procesar archivo", f"No se pudo agregar el archivo:\n{str(e)}")
+            except Exception as e:
+                messagebox.showerror(
+                    "Error al procesar archivo",
+                    f"No se pudo procesar el archivo '{os.path.basename(archivo)}':\n{str(e)}",
+                )
+
+        es_primera_seleccion = False
 
     # 4. Guardar archivo final unificado como 'LEGAJO [número]'
     nombre_archivo_sugerido = f"LEGAJO {num_puro}.pdf"
@@ -148,11 +183,13 @@ def procesar_unificacion():
         initialfile=nombre_archivo_sugerido,
         defaultextension=".pdf",
         filetypes=[("Archivos PDF", "*.pdf")],
-        parent=root
+        parent=root,
     )
 
     if not ruta_guardado:
-        messagebox.showwarning("Cancelado", "No se guardó el documento unificado.")
+        messagebox.showwarning(
+            "Cancelado", "No se guardó el documento unificado."
+        )
         root.destroy()
         return
 
@@ -160,9 +197,13 @@ def procesar_unificacion():
         with open(ruta_guardado, "wb") as f_out:
             writer_final.write(f_out)
         writer_final.close()
-        messagebox.showinfo("Éxito", f"Legajo guardado correctamente en:\n{ruta_guardado}")
+        messagebox.showinfo(
+            "Éxito", f"Legajo guardado correctamente en:\n{ruta_guardado}"
+        )
     except Exception as e:
-        messagebox.showerror("Error al guardar", f"No se pudo guardar el archivo final: {str(e)}")
+        messagebox.showerror(
+            "Error al guardar", f"No se pudo guardar el archivo final: {str(e)}"
+        )
     finally:
         root.destroy()
 
