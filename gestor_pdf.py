@@ -44,6 +44,7 @@ def es_pagina_en_blanco_visual(
 # ==============================================================================
 
 def modulo_unificacion_legajo(root):
+    # 1. Solicitar el número de legajo
     entrada_usuario = simpledialog.askstring(
         "Número de Legajo",
         "Ingrese el número de legajo:",
@@ -87,6 +88,7 @@ def modulo_unificacion_legajo(root):
         ancho = float(pagina_base.mediabox.width)
         alto = float(pagina_base.mediabox.height)
 
+        # Generar capa de texto con número de legajo tamaño 24 y posición calibrada
         buffer = io.BytesIO()
         c = canvas.Canvas(buffer, pagesize=(ancho, alto))
         c.setFillColor(HexColor("#000000"))
@@ -198,7 +200,6 @@ def modulo_unificacion_legajo(root):
 # ==============================================================================
 
 def modulo_gestion_contrasenas(root):
-    # Ventana modal con botones específicos "Quitar" y "Agregar"
     eleccion = {"accion": None}
 
     ventana_opcion = tk.Toplevel(root)
@@ -398,6 +399,7 @@ def menu_principal():
     root.resizable(False, False)
     root.attributes("-topmost", True)
 
+    # Centrar ventana en pantalla
     ancho_pantalla = root.winfo_screenwidth()
     alto_pantalla = root.winfo_screenheight()
     x = (ancho_pantalla // 2) - (420 // 2)
