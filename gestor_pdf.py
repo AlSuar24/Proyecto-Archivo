@@ -1,5 +1,7 @@
 import io
 import os
+import shutil
+import tempfile
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
 from PIL import ImageStat
@@ -61,7 +63,6 @@ def modulo_unificacion_legajo(root):
 
     legajo_caratula = f"{num_puro}/00"
 
-    # 2. Localizar la Carátula Base Oficial
     ruta_caratula = os.path.join(os.getcwd(), CARATULA_BASE_NOMBRE)
     if not os.path.exists(ruta_caratula):
         messagebox.showinfo(
@@ -108,7 +109,6 @@ def modulo_unificacion_legajo(root):
         )
         return
 
-    # 3. Selección múltiple de documentos anexos
     es_primera_seleccion = True
 
     while True:
@@ -166,7 +166,6 @@ def modulo_unificacion_legajo(root):
 
         es_primera_seleccion = False
 
-    # 4. Guardar archivo final unificado como 'LEGAJO [número]'
     nombre_archivo_sugerido = f"LEGAJO {num_puro}.pdf"
 
     ruta_guardado = filedialog.asksaveasfilename(
@@ -197,48 +196,103 @@ def modulo_unificacion_legajo(root):
 
 
 # ==============================================================================
-# MÓDULO 2: GESTIÓN MASIVA DE CONTRASEÑAS (QUITAR / AGREGAR)
+# MÓDULO 2: GESTIÓN MASIVA DE CONTRASEÑAS (REEMPLAZO EN ORIGEN)
 # ==============================================================================
 
 def modulo_gestion_contrasenas(root):
-    operacion = messagebox.askquestion(
-        "Gestor de Contraseñas",
-        "Seleccione la operación que desea realizar:\n\n"
-        "• [Sí] para QUITAR contraseña a múltiples PDFs.\n"
-        "• [No] para AGREGAR contraseña a múltiples PDFs.",
-        icon="question",
-    )
+    eleccion = {"accion": None}
 
-    # 1. Selección múltiple de archivos
-    archivos = filedialog.askopenfilenames(
-        title="Seleccione todos los archivos PDF a procesar",
-        filetypes=[("Archivos PDF", "*.pdf")],
-    )
+    ventana_opcion = tk.Toplevel(root)
+    ventana_opcion.title("Múltiples Contraseñas")
+    ventana_opcion.geometry("360x170")
+    ventana_opcion.resizable(False, False)
+    ventana_opcion.attributes("-topmost", True)
 
-    if not archivos:
-        messagebox.showwarning("Cancelado", "No se seleccionaron archivos.")
+    ancho_p = ventana_opcion.winfo_screenwidth()
+    alto_p = ventana_opcion.winfo_screenheight()
+    x = (ancho_p // 2) - (360 // 2)
+    y = (alto_p // 2) - (170 // 2)
+    ventana_opcion.geometry(f"+{x}+{y}")
+
+    def set_accion(valor):
+        eleccion["accion"] = valor
+        ventana_opcion.destroy()
+
+    tk.Label(
+        ventana_opcion,
+        text="MÚLTIPLES CONTRASEÑAS",
+        font=("Helvetica", 11, "bold"),
+        pady=8,
+    ).pack()
+
+    tk.Label(
+        ventana_opcion,
+        text="Seleccione la acción a realizar sobre los archivos:",
+        font=("Helvetica", 9),
+        fg="#555555",
+    ).pack(pady=2)
+
+    frame_btns = tk.Frame(ventana_opcion)
+    frame_btns.pack(pady=12)
+
+    btn_quitar = tk.Button(
+        frame_btns,
+        text="Quitar Contraseña",
+        font=("Helvetica", 9, "bold"),
+        bg="#c0392b",
+        fg="white",
+        padx=10,
+        pady=5,
+        command=lambda: set_accion("quitar"),
+        cursor="hand2",
+    )
+    btn_quitar.pack(side="left", padx=8)
+
+    btn_agregar = tk.Button(
+        frame_btns,
+        text="Agregar Contraseña",
+        font=("Helvetica", 9, "bold"),
+        bg="#27ae60",
+        fg="white",
+        padx=10,
+        pady=5,
+        command=lambda: set_accion("agregar"),
+        cursor="hand2",
+    )
+    btn_agregar.pack(side="left", padx=8)
+
+    ventana_opcion.wait_window()
+
+    accion = eleccion["accion"]
+    if not accion:
         return
 
-    # 2. Carpeta de destino para no sobreescribir los originales
-    messagebox.showinfo(
-        "Carpeta de salida",
-        "Seleccione la carpeta donde se guardarán los archivos procesados.",
-    )
-    carpeta_destino = filedialog.askdirectory(
-        title="Seleccionar carpeta de destino"
+    # 1. Selección de carpeta
+    carpeta = filedialog.askdirectory(
+        title="Seleccionar carpeta donde están los PDFs"
     )
 
-    if not carpeta_destino:
-        messagebox.showwarning(
-            "Cancelado", "No se seleccionó una carpeta de destino."
+    if not carpeta:
+        messagebox.showwarning("Cancelado", "No se seleccionó ninguna carpeta.")
+        return
+
+    archivos_pdf = [
+        os.path.join(carpeta, f)
+        for f in os.listdir(carpeta)
+        if f.lower().endswith(".pdf")
+    ]
+
+    if not archivos_pdf:
+        messagebox.showinfo(
+            "Sin archivos", "No se encontraron archivos PDF en la carpeta seleccionada."
         )
         return
 
-    # MODO: QUITAR CONTRASEÑA
-    if operacion == "yes":
+    # MODO QUITAR CONTRASEÑA
+    if accion == "quitar":
         clave_actual = simpledialog.askstring(
             "Quitar Contraseña",
-            f"Ingrese la contraseña actual de los PDFs (vacío para probar '{CLAVE_POR_DEFECTO}'):",
+            f"Ingrese la contraseña actual de los PDFs (vacío para usar '{CLAVE_POR_DEFECTO}'):",
             parent=root,
         )
 
@@ -250,7 +304,7 @@ def modulo_gestion_contrasenas(root):
         exitosos = 0
         fallidos = []
 
-        for archivo in archivos:
+        for archivo in archivos_pdf:
             nombre = os.path.basename(archivo)
             try:
                 lector = PdfReader(archivo)
@@ -264,22 +318,25 @@ def modulo_gestion_contrasenas(root):
                 for pag in lector.pages:
                     writer.add_page(pag)
 
-                ruta_salida = os.path.join(carpeta_destino, f"SIN_CLAVE_{nombre}")
-                with open(ruta_salida, "wb") as f_out:
-                    writer.write(f_out)
+                # Escritura en temporal y reemplazo directo del archivo original
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                    temp_path = tmp.name
+                    writer.write(tmp)
                 writer.close()
+
+                shutil.move(temp_path, archivo)
                 exitosos += 1
 
             except Exception as e:
                 fallidos.append(f"{nombre} ({str(e)})")
 
-        res_msg = f"Archivos desbloqueados con éxito: {exitosos}"
+        res_msg = f"Archivos desbloqueados y reemplazados con éxito: {exitosos}"
         if fallidos:
-            res_msg += "\n\nArchivos con error:\n" + "\n".join(fallidos[:10])
+            res_msg += "\n\nArchivos omitidos:\n" + "\n".join(fallidos[:10])
         messagebox.showinfo("Proceso finalizado", res_msg)
 
-    # MODO: AGREGAR CONTRASEÑA
-    else:
+    # MODO AGREGAR CONTRASEÑA
+    elif accion == "agregar":
         nueva_clave = simpledialog.askstring(
             "Agregar Contraseña",
             "Ingrese la nueva contraseña que desea colocar a todos los PDFs:",
@@ -289,42 +346,43 @@ def modulo_gestion_contrasenas(root):
 
         if not nueva_clave:
             messagebox.showwarning(
-                "Cancelado", "No ingresó ninguna contraseña."
+                "Cancelado", "No se ingresó ninguna contraseña."
             )
             return
 
         exitosos = 0
         fallidos = []
 
-        for archivo in archivos:
+        for archivo in archivos_pdf:
             nombre = os.path.basename(archivo)
             try:
                 lector = PdfReader(archivo)
 
-                # Si ya tenía clave por defecto, desbloquear primero para reencriptar
                 if lector.is_encrypted:
                     res = lector.decrypt(CLAVE_POR_DEFECTO)
                     if res == 0:
-                        fallidos.append(f"{nombre} (Ya estaba protegido con otra clave)")
+                        fallidos.append(f"{nombre} (Ya posee otra contraseña previa)")
                         continue
 
                 writer = PdfWriter()
                 for pag in lector.pages:
                     writer.add_page(pag)
 
-                # Aplicar la nueva clave al archivo
                 writer.encrypt(nueva_clave)
 
-                ruta_salida = os.path.join(carpeta_destino, f"PROTEGIDO_{nombre}")
-                with open(ruta_salida, "wb") as f_out:
-                    writer.write(f_out)
+                # Escritura en temporal y reemplazo directo del archivo original
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                    temp_path = tmp.name
+                    writer.write(tmp)
                 writer.close()
+
+                shutil.move(temp_path, archivo)
                 exitosos += 1
 
             except Exception as e:
                 fallidos.append(f"{nombre} ({str(e)})")
 
-        res_msg = f"Archivos protegidos con éxito: {exitosos}"
+        res_msg = f"Archivos protegidos y reemplazados con éxito: {exitosos}"
         if fallidos:
             res_msg += "\n\nArchivos omitidos:\n" + "\n".join(fallidos[:10])
         messagebox.showinfo("Proceso finalizado", res_msg)
@@ -389,7 +447,7 @@ def menu_principal():
 
     btn_pass = tk.Button(
         root,
-        text="2. Quitar / Agregar Contraseña Masiva",
+        text="2. Múltiples Contraseñas",
         font=("Helvetica", 10, "bold"),
         bg="#007acc",
         fg="white",
